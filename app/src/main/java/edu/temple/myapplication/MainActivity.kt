@@ -13,14 +13,24 @@ import android.view.Menu
 import android.view.MenuItem
 import android.widget.TextView
 
+private const val PREFS_NAME = "TimerPrefs"
+private const val KEY_VALUE = "last_value"
+private const val KEY_PAUSED = "was_paused"
+
 class MainActivity : AppCompatActivity() {
 
     private var timerBinder: TimerService.TimerBinder? = null
     private var isBound = false
+    private var lastValue = 100
 
     // Handler to receive updates from the service
     private val handler = Handler(Looper.getMainLooper()) { msg ->
-        findViewById<TextView>(R.id.textView).text = msg.what.toString()
+        lastValue = msg.what
+        findViewById<TextView>(R.id.textView).text = lastValue.toString()
+        // If timer finishes, clear any saved pause state
+        if (lastValue <= 1) {
+            clearPausedState()
+        }
         true
     }
 
@@ -44,6 +54,13 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
+        // Load saved value if it exists to show in UI immediately
+        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        if (prefs.getBoolean(KEY_PAUSED, false)) {
+            lastValue = prefs.getInt(KEY_VALUE, 100)
+            findViewById<TextView>(R.id.textView).text = lastValue.toString()
+        }
+
         // Bind to the service when the activity is created
         Intent(this, TimerService::class.java).also { intent ->
             bindService(intent, connection, Context.BIND_AUTO_CREATE)
@@ -57,6 +74,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onPrepareOptionsMenu(menu: Menu?): Boolean {
         val startPauseItem = menu?.findItem(R.id.action_start_pause)
+        // If it's running (even if we are in the middle of a session), show Pause
         if (timerBinder?.isRunning == true) {
             startPauseItem?.title = "Pause"
         } else {
@@ -69,10 +87,27 @@ class MainActivity : AppCompatActivity() {
         return when (item.itemId) {
             R.id.action_start_pause -> {
                 if (isBound) {
-                    if (timerBinder?.isRunning == true) {
-                        timerBinder?.pause()
+                    val binder = timerBinder!!
+                    if (binder.isRunning) {
+                        // Action: PAUSE
+                        binder.pause()
+                        savePausedState(lastValue)
+                    } else if (binder.paused) {
+                        // Action: RESUME (thread is still alive in background)
+                        binder.start(lastValue)
+                        clearPausedState()
                     } else {
-                        timerBinder?.start(100)
+                        // Action: START (fresh start or continuing from closed app)
+                        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                        if (prefs.getBoolean(KEY_PAUSED, false)) {
+                            // Continue from saved value
+                            val savedValue = prefs.getInt(KEY_VALUE, 100)
+                            binder.start(savedValue)
+                        } else {
+                            // Start fresh from 100
+                            binder.start(100)
+                        }
+                        clearPausedState()
                     }
                     invalidateOptionsMenu()
                 }
@@ -81,12 +116,28 @@ class MainActivity : AppCompatActivity() {
             R.id.action_stop -> {
                 if (isBound) {
                     timerBinder?.stop()
+                    clearPausedState()
+                    lastValue = 100
+                    findViewById<TextView>(R.id.textView).text = "100"
                     invalidateOptionsMenu()
                 }
                 true
             }
             else -> super.onOptionsItemSelected(item)
         }
+    }
+
+    private fun savePausedState(value: Int) {
+        getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
+            .putInt(KEY_VALUE, value)
+            .putBoolean(KEY_PAUSED, true)
+            .apply()
+    }
+
+    private fun clearPausedState() {
+        getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
+            .putBoolean(KEY_PAUSED, false)
+            .apply()
     }
 
     override fun onDestroy() {
